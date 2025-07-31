@@ -35,8 +35,8 @@ class VGG11_10(nn.Module):
         )
 
     def forward(self, x: torch.Tensor):
-        x = self.layer1(x) 
-        x = self.layer2(x)  
+        x = self.layer1(x)  # 执行卷积神经网络部分
+        x = self.layer2(x)  # 执行全连接部分
         x = self.layer3(x)
         x = self.layer4(x)
         x = self.layer5(x)
@@ -84,8 +84,8 @@ class VGG11_100(nn.Module):
         )
 
     def forward(self, x: torch.Tensor):
-        x = self.layer1(x)  
-        x = self.layer2(x)  
+        x = self.layer1(x)  # 执行卷积神经网络部分
+        x = self.layer2(x)  # 执行全连接部分
         x = self.layer3(x)
         x = self.layer4(x)
         x = self.layer5(x)
