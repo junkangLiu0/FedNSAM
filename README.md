@@ -1,8 +1,11 @@
+
+
++vx 15653218567 帮你解决代码部署问题！
 # Setup
 
 - torch == 2.1
 - torchvision == 0.19
-- ray == 1.0
+- ray == 1.0.0
 
 # Dataset
 
