@@ -22,7 +22,7 @@ class Nesterov(torch.optim.Optimizer):
 
     @torch.no_grad()
     def first_step(self, g_update):
-        inputs, labels, loss_func, model = self.paras
+        #inputs, labels, loss_func, model = self.paras
         alpha=0.1
         grad_norm = 0
         keys_list = list(g_update.keys())
@@ -36,8 +36,8 @@ class Nesterov(torch.optim.Optimizer):
                     key = keys_list[idx]
                     g_update[key] = g_update[key].to('cuda')
                     #g_update[key]=alpha*p.grad+(1-alpha)*g_update[key]
-                    #grad_norm += g_update[key].norm(p=2)**2
-        #grad_norm=grad_norm**0.5
+                    grad_norm += g_update[key].norm(p=2)**2
+        grad_norm=grad_norm**0.5
 
 
 
@@ -53,8 +53,8 @@ class Nesterov(torch.optim.Optimizer):
                     g_update[key] = g_update[key].to('cuda')
                     #e_w = g_update[key] * scale.to(p)
                     key = keys_list[idx]
-                    #e_w = g_update[key]*self.gamma-g_update[key] * scale.to(p)
-                    e_w = g_update[key] * self.gamma
+                    e_w = g_update[key]*self.gamma-g_update[key] * scale.to(p)
+                    #e_w = g_update[key] * self.gamma
                 p.add_(e_w )
                 self.state[p]["e_w"] = e_w
 
