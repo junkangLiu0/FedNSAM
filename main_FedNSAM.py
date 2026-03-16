@@ -97,7 +97,7 @@ if CNN in ['VIT-B', 'swin_tiny', 'swin_large', 'VIT-L', 'swin_small', 'swin_base
 
 
 if CNN in ['VIT-B', 'swin_tiny', 'swin_large', 'VIT-L', 'swin_small', 'swin_base', 'resnet18pre', 'resnet50pre',
-           'resnet101pre'] and args.pix == 224:
+           'resnet101pre']:
     if data_name == 'imagenet':
         transform_train = transforms.Compose([
             transforms.Resize((224, 224)),  # 将图像大小调整为 ResNet-18 输入的大小
@@ -521,10 +521,8 @@ class DataWorker(object):
                 loss = self.criterion(output, target)
                 self.loss+=loss.item()/args.K
                 loss.backward()
-
                 torch.nn.utils.clip_grad_norm_(parameters=self.model.parameters(), max_norm=10)
                 self.optimizer.step()
-        #'''
         if args.lora == 1:
             delta_w = {k: v.cpu() for k, v in self.model.state_dict().items() if 'lora' in k or "classifier" in k or "head" in k}
             for k, v in self.model.state_dict().items():
@@ -534,7 +532,6 @@ class DataWorker(object):
             delta_w = {k: v.cpu() for k, v in self.model.state_dict().items()}
             for k, v in self.model.state_dict().items():
                 delta_w[k] = v.cpu() - weights[k]
-        #'''
         norm=0
         for k, v in self.model.named_parameters():
             if k in delta_w.keys():
@@ -658,7 +655,6 @@ class DataWorker(object):
                 ps_c[k] = ps_c[k].to(device)
                 self.ci[k] = self.ci[k].to(device)
                 weights[k] = weights[k].to(device)
-
         step = 0  # 新增步数计数
         self.loss=0
         for e in range(E):
@@ -678,7 +674,6 @@ class DataWorker(object):
                 loss = loss_c + lg_loss
                 loss.backward()
                 self.optimizer.step()
-
         send_ci = {}
         ci = {}
         with torch.no_grad():
@@ -813,9 +808,6 @@ class DataWorker(object):
                 target = target.to(device)
                 self.model.zero_grad()
                 output = self.model(data)
-                ce_loss = self.criterion(output, target)
-                ## Weight L2 loss
-                reg_loss = 0
                 loss_cg = 0
                 alpha = 0.01
                 for n, p in model.named_parameters():
@@ -1018,10 +1010,6 @@ class DataWorker(object):
             if "classifier" in name or "head" in name:
                 param.requires_grad = True
         args.gamma=0.9
-        #self.alpha=0.95
-        #lr =lr + self.alpha / num_workers * lr
-        #lr = lr *(1-args.gamma)
-        #self.optimizer = torch.optim.SGD(filter(lambda p: p.requires_grad, self.model.parameters()), lr=lr*(1-args.gamma), weight_decay=0.001)
         self.optimizer = torch.optim.SGD(filter(lambda p: p.requires_grad, self.model.parameters()), lr=lr, weight_decay=0.001)
         for e in range(E):
             for batch_idx, (data, target) in enumerate(self.data_iterator):
@@ -1037,10 +1025,6 @@ class DataWorker(object):
                         continue
                     v.grad.data = (1 - args.gamma) * v.grad.data + args.gamma * (ps_c[k]-1 / num_workers *(self.ci[k]-v.grad.data))
                 self.optimizer.step()
-                #for n, p in self.model.named_parameters():
-                #    if not p.requires_grad:
-                #        continue
-                #    p.data.add_((1 / num_workers * self.ci[n]-ps_c[n])*args.gamma)
         send_ci = {}
         for k, v in self.model.named_parameters():
             if k in ps_c.keys():
@@ -1063,7 +1047,6 @@ class DataWorker(object):
     def update_SAM(self, weights, E, index, lr):
         self.model.set_weights(weights)  # y_i = x, x:weights
         num_workers = self.num_workers
-        # 进入循环体之前，先装载数据集，以及状态
         self.data_id_loader(index)
         self.state_id_loader(index)
         zero_weight = deepcopy(self.model.get_weights())
@@ -1083,12 +1066,17 @@ class DataWorker(object):
                 # loss_function(output,model(input)).backward()
                 self.criterion(self.model(data), target).backward()
                 self.optimizer.second_step(zero_grad=True)
-
-        # 迭代了所有的E轮后，更新本地的ci 并发送ci,delta_w
-        self.loss = loss.item()
-        delta_w = deepcopy(self.model.get_weights())
-        for k, v in self.model.get_weights().items():
-            delta_w[k] = v - weights[k]
+        if args.lora == 1:
+            delta_w = {k: v.cpu() for k, v in self.model.state_dict().items() if 'lora' in k or "classifier" in k or "head" in k}
+            for k, v in self.model.state_dict().items():
+                if 'lora' in k or "classifier" in k or "head" in k:
+                    delta_w[k] = v.cpu() - weights[k].cpu()
+        else:
+            delta_w = {k: v.cpu() for k, v in self.model.state_dict().items()}
+            for k, v in self.model.state_dict().items():
+                delta_w[k] = v.cpu() - weights[k].cpu()
+        self.model.to("cpu")
+        torch.cuda.empty_cache()
         return delta_w
 
     def update_NSAM(self, weights, E, index, ps_c, lr):
@@ -1097,9 +1085,15 @@ class DataWorker(object):
         args.gamma=0.85
         args.rho=0.05
         for k, v in weights.items():
-            weights[k] = weights[k] + ps_c[k] * args.gamma
+            if k in ps_c.keys():
+                weights[k] = weights[k] + ps_c[k] * args.gamma
+                weights[k] = weights[k].to(device)
         self.model.load_state_dict(weights)
+        self.model.to(device)
         self.data_id_loader(index)
+        for name, param in self.model.named_parameters():
+            if "classifier" in name or "head" in name:
+                param.requires_grad = True
         base_optimizer = torch.optim.SGD
         self.optimizer = SAM(self.model.parameters(), base_optimizer, lr=lr, weight_decay=0.001, rho=args.rho)
         step = 0  # 新增步数计数
@@ -1120,30 +1114,36 @@ class DataWorker(object):
                 self.criterion(self.model(data), target).backward()
                 torch.nn.utils.clip_grad_norm_(parameters=self.model.parameters(), max_norm=10)
                 self.optimizer.second_step(zero_grad=True)
-        for k, v in self.model.state_dict().items():
-            weights[k] = weights[k].to('cpu')
-        delta_w = {}
-        for k, v in self.model.state_dict().items():
-            delta_w[k] = v.cpu()  - weights[k]
+        if args.lora == 1:
+            delta_w = {k: v.cpu() for k, v in self.model.state_dict().items() if 'lora' in k or "classifier" in k or "head" in k}
+            for k, v in self.model.state_dict().items():
+                if 'lora' in k or "classifier" in k or "head" in k:
+                    delta_w[k] = v.cpu() - weights[k].cpu()
+        else:
+            delta_w = {k: v.cpu() for k, v in self.model.state_dict().items()}
+            for k, v in self.model.state_dict().items():
+                delta_w[k] = v.cpu() - weights[k].cpu()
+        self.model.to("cpu")
+        torch.cuda.empty_cache()
         return delta_w
 
     def update_FedACG(self, weights, E, index, ps_c, lr):
         if ps_c == {}:
             ps_c = {k: torch.zeros_like(v, device='cpu') for k, v in self.model.state_dict().items()}
-        args.gamma=0.85
         for k, v in weights.items():
-            weights[k] = weights[k] + ps_c[k] * args.gamma
+            if k in ps_c.keys():
+                weights[k] = weights[k] + ps_c[k] * args.gamma
             weights[k] = weights[k].to(device)
-
         self.model.load_state_dict(weights)
         self.model.to(device)
         self.data_id_loader(index)
         for name, param in self.model.named_parameters():
             if "classifier" in name or "head" in name:
                 param.requires_grad = True
-        self.optimizer = torch.optim.SGD(self.model.parameters(), lr=lr, weight_decay=1e-3)
+        self.optimizer = torch.optim.SGD(filter(lambda p: p.requires_grad, self.model.parameters()), lr=lr,
+                                         weight_decay=1e-3)
         step = 0  # 新增步数计数
-        self.loss=0
+        self.loss = 0
         for e in range(E):
             for batch_idx, (data, target) in enumerate(self.data_iterator):
                 if step >= args.K:
@@ -1162,9 +1162,17 @@ class DataWorker(object):
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(parameters=self.model.parameters(), max_norm=10)
                 self.optimizer.step()
-        delta_w = {k: v.cpu() for k, v in self.model.state_dict().items()}
-        for k, v in self.model.state_dict().items():
-            delta_w[k] = v.cpu() - weights[k].cpu()
+        if args.lora == 1:
+            delta_w = {k: v.cpu() for k, v in self.model.state_dict().items() if 'lora' in k or "classifier" in k or "head" in k}
+            for k, v in self.model.state_dict().items():
+                if 'lora' in k or "classifier" in k or "head" in k:
+                    delta_w[k] = v.cpu() - weights[k].cpu()
+        else:
+            delta_w = {k: v.cpu() for k, v in self.model.state_dict().items()}
+            for k, v in self.model.state_dict().items():
+                delta_w[k] = v.cpu() - weights[k].cpu()
+        self.model.to("cpu")
+        torch.cuda.empty_cache()
         return delta_w
 
     def update_FedNesterov(self, weights, E, index, ps_c, lr):
@@ -1197,9 +1205,17 @@ class DataWorker(object):
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(parameters=self.model.parameters(), max_norm=10)
                 self.optimizer.step()
-        delta_w = {k: v.cpu() for k, v in self.model.state_dict().items()}
-        for k, v in self.model.state_dict().items():
-            delta_w[k] = v.cpu() - weights[k]
+        if args.lora == 1:
+            delta_w = {k: v.cpu() for k, v in self.model.state_dict().items() if 'lora' in k or "classifier" in k or "head" in k}
+            for k, v in self.model.state_dict().items():
+                if 'lora' in k or "classifier" in k or "head" in k:
+                    delta_w[k] = v.cpu() - weights[k].cpu()
+        else:
+            delta_w = {k: v.cpu() for k, v in self.model.state_dict().items()}
+            for k, v in self.model.state_dict().items():
+                delta_w[k] = v.cpu() - weights[k].cpu()
+        self.model.to("cpu")
+        torch.cuda.empty_cache()
         return delta_w
 
 
@@ -1313,7 +1329,7 @@ def apply_weights_adam(num_workers, weights,model,momen_m,momen_v):
     return model.state_dict(),momen_m,momen_v
 
 @torch.no_grad()
-def apply_weights_avgACG(num_workers, weights,model,momen_m):
+def apply_weights_avgACG2(num_workers, weights,model,momen_m):
     model.to('cpu')
     gamma = 0.85
     ps_w = model.state_dict()
@@ -1335,6 +1351,27 @@ def apply_weights_avgACG(num_workers, weights,model,momen_m):
         ps_w[k] = v + momen_m[k]
     model.load_state_dict(ps_w)
     return model.state_dict(), momen_m
+
+def apply_weights_avgACG(num_workers, weights,model,momen_m):
+    model.to('cpu')
+    gamma = args.gamma
+    ps_w = {k: v.cpu() for k, v in model.state_dict().items()}
+    sum_weights = {}
+    for weight in weights:
+        for k, v in weight.items():
+            if k in sum_weights.keys():
+                sum_weights[k] += 1 / (args.num_workers * args.selection) * v
+            else:
+                sum_weights[k] = 1 / (args.num_workers * args.selection) * v
+    if momen_m == {}:
+        momen_m = deepcopy(sum_weights)
+    else:
+        for k, v in sum_weights.items():
+            momen_m[k] = gamma * v + sum_weights[k]
+    for k, v in sum_weights.items():
+        ps_w[k] = ps_w[k] + momen_m[k]
+    model.load_state_dict(ps_w)
+    return {k: v.cpu() for k, v in model.state_dict().items()}, momen_m
 
 
 
@@ -1663,13 +1700,7 @@ if __name__ == "__main__":
                 del weights_dict[k]
             print(model.load_state_dict(weights_dict, strict=False))
 
-        if args.freeze_layers:
-            for name, para in model.named_parameters():
-                # 除head, pre_logits外，其他权重全部冻结
-                if "head" not in name and "pre_logits" not in name:
-                    para.requires_grad_(False)
-                else:
-                    print("training {}".format(name))
+
 
     if args.CNN == 'VIT-L':
         if args.weights != "":
@@ -1682,13 +1713,7 @@ if __name__ == "__main__":
                 del weights_dict[k]
             print(model.load_state_dict(weights_dict, strict=False))
 
-        if args.freeze_layers:
-            for name, para in model.named_parameters():
-                # 除head, pre_logits外，其他权重全部冻结
-                if "head" not in name and "pre_logits" not in name:
-                    para.requires_grad_(False)
-                else:
-                    print("training {}".format(name))
+
     #if args.pre == 1:
     if args.CNN == 'swin_tiny' and args.pre == 1:
         if args.weights != "":
@@ -1700,13 +1725,7 @@ if __name__ == "__main__":
                     del weights_dict[k]
             print(model.load_state_dict(weights_dict, strict=False))
 
-        if args.freeze_layers:
-            for name, para in model.named_parameters():
-                # 除head外，其他权重全部冻结
-                if "head" not in name:
-                    para.requires_grad_(False)
-                else:
-                    print("training {}".format(name))
+
 
 
     if args.CNN == 'swin_small':
@@ -1719,13 +1738,7 @@ if __name__ == "__main__":
                     del weights_dict[k]
             print(model.load_state_dict(weights_dict, strict=False))
 
-        if args.freeze_layers:
-            for name, para in model.named_parameters():
-                # 除head外，其他权重全部冻结
-                if "head" not in name:
-                    para.requires_grad_(False)
-                else:
-                    print("training {}".format(name))
+
 
     if args.CNN == 'swin_base':
 
@@ -1738,13 +1751,6 @@ if __name__ == "__main__":
                     del weights_dict[k]
             print(model.load_state_dict(weights_dict, strict=False))
 
-        if args.freeze_layers:
-            for name, para in model.named_parameters():
-                # 除head外，其他权重全部冻结
-                if "head" not in name:
-                    para.requires_grad_(False)
-                else:
-                    print("training {}".format(name))
         # '''
 
     if args.CNN == 'swin_large':
@@ -1757,13 +1763,7 @@ if __name__ == "__main__":
                     del weights_dict[k]
             print(model.load_state_dict(weights_dict, strict=False))
 
-        if args.freeze_layers:
-            for name, para in model.named_parameters():
-                # 除head外，其他权重全部冻结
-                if "head" not in name:
-                    para.requires_grad_(False)
-                else:
-                    print("training {}".format(name))
+
 
     if args.lora == 1 and args.alg != 'FLORA':
         model = get_peft_model(model, lora_config)
