@@ -1,6 +1,6 @@
 
 
-FedNSAM！
+# FedNSAM:Consistency of Local and Global Flatness for Federated Learning
 
 # Setup
 
